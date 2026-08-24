@@ -1,0 +1,46 @@
+name: Temporary Harmony home playback APK build
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build Harmony Music Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Harmony Music fix branch
+        uses: actions/checkout@v4
+        with:
+          repository: matrixdurden/harmony-music
+          ref: fix/home-playback-2026
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.24.2'
+          cache: true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install packages
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: harmony-music-1.12.4-home-playback-fix
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
