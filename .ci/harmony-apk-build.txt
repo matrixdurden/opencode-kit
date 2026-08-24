@@ -1,0 +1,1 @@
+Temporary CI trigger for Harmony Music Android 1.12.3 build.
