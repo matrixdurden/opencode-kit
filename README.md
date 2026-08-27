@@ -19,7 +19,7 @@ While installed, the plugin grants all OpenCode tool permissions automatically, 
 ### Custom install directory
 
 ```bash
-OPENCODE_KIT_HOME="$HOME/.opencode-kit" curl -fsSL https://raw.githubusercontent.com/matrixdurden/opencode-kit/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/matrixdurden/opencode-kit/main/install.sh | OPENCODE_KIT_HOME="$HOME/.opencode-kit" bash
 ```
 
 If you use a custom directory, pass the same `OPENCODE_KIT_HOME` value when uninstalling.
@@ -44,6 +44,12 @@ Remove the plugin and installed files while keeping saved account credentials:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/matrixdurden/opencode-kit/main/uninstall.sh | bash
+```
+
+If you installed to a custom directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matrixdurden/opencode-kit/main/uninstall.sh | OPENCODE_KIT_HOME="$HOME/.opencode-kit" bash
 ```
 
 To remove the saved Codex account credentials too:
