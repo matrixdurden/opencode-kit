@@ -8,16 +8,34 @@ import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
 const home = process.env.HOME
 if (!home) throw new Error("HOME is not set")
 
-const authPath = join(home, ".local", "share", "opencode", "auth.json")
 const dataHome = process.env.XDG_DATA_HOME ?? join(home, ".local", "share")
+const authPath = join(dataHome, "opencode", "auth.json")
 const accountsDir = join(dataHome, "jr-codex-switch", "accounts")
-const usageCache = new Map<string, { expiresAt: number; text: string }>()
+const accountNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+const usageCache = new Map<string, { expiresAt: number; summary: UsageSummary }>()
+const accountRefreshes = new Map<string, Promise<OAuth>>()
 const usageQueue: Array<() => void> = []
 let activeUsageRequests = 0
 const maxUsageRequests = 3
+const oauthClientId = "app_EMoamEEZ73f0CkXaXp7hrann"
+const oauthIssuer = "https://auth.openai.com"
+
+type OAuth = {
+  type: "oauth"
+  refresh: string
+  access: string
+  expires: number
+  accountId?: string
+  enterpriseUrl?: string
+}
+
+type UsageSummary = {
+  identity: string
+  details: string
+}
 
 function accountPath(name: string) {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) {
+  if (!accountNamePattern.test(name)) {
     throw new Error("Use letters, numbers, underscores, or hyphens for account names")
   }
 
@@ -26,6 +44,34 @@ function accountPath(name: string) {
 
 async function readJson(path: string) {
   return JSON.parse(await readFile(path, "utf8"))
+}
+
+function openAIAuth(value: unknown): OAuth | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const auth = (value as Record<string, unknown>).openai
+  if (!auth || typeof auth !== "object") return undefined
+  const openai = auth as Record<string, unknown>
+  if (
+    openai.type !== "oauth" ||
+    typeof openai.refresh !== "string" ||
+    typeof openai.access !== "string" ||
+    typeof openai.expires !== "number"
+  ) return undefined
+
+  return {
+    type: "oauth",
+    refresh: openai.refresh,
+    access: openai.access,
+    expires: openai.expires,
+    ...(typeof openai.accountId === "string" ? { accountId: openai.accountId } : {}),
+    ...(typeof openai.enterpriseUrl === "string" ? { enterpriseUrl: openai.enterpriseUrl } : {}),
+  }
+}
+
+async function readOpenAIAuth(path: string) {
+  const auth = openAIAuth(await readJson(path))
+  if (!auth) throw new Error("OpenAI OAuth credentials are invalid")
+  return auth
 }
 
 async function writeJson(path: string, value: unknown) {
@@ -42,25 +88,104 @@ async function accountNames() {
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => basename(entry.name, ".json"))
+    .filter((name) => accountNamePattern.test(name))
     .sort()
 }
 
 async function saveCurrentAccount(name: string) {
-  const auth = await readJson(authPath)
-  if (auth.openai?.type !== "oauth") {
-    throw new Error("Connect OpenAI with ChatGPT Plus/Pro first")
-  }
+  const openai = await readOpenAIAuth(authPath).catch(() => undefined)
+  if (!openai) throw new Error("Connect OpenAI with ChatGPT Plus/Pro first")
 
   await mkdir(accountsDir, { recursive: true, mode: 0o700 })
   await chmod(accountsDir, 0o700)
-  await writeJson(accountPath(name), { openai: auth.openai })
+  await writeJson(accountPath(name), { openai })
+  usageCache.delete(name)
 }
 
 async function switchAccount(api: TuiPluginApi, name: string) {
-  const saved = await readJson(accountPath(name))
-  if (saved.openai?.type !== "oauth") throw new Error(`Saved account "${name}" is invalid`)
+  const openai = await freshAccount(api, name)
 
-  await api.client.auth.set({ path: { id: "openai" }, body: saved.openai })
+  await api.client.auth.set({ providerID: "openai", auth: openai })
+
+  const active = await readOpenAIAuth(authPath).catch(() => undefined)
+  const switched = openai.accountId
+    ? active?.accountId === openai.accountId
+    : active?.access === openai.access
+  if (!switched) throw new Error(`OpenCode did not switch to "${name}"`)
+}
+
+function jwtClaims(token: string) {
+  const payload = token.split(".")[1]
+  if (!payload) return undefined
+  try {
+    const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
+    return value && typeof value === "object" ? value as Record<string, unknown> : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function refreshAccount(openai: OAuth) {
+  const response = await fetch(`${oauthIssuer}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: openai.refresh,
+      client_id: oauthClientId,
+    }).toString(),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error(`Could not refresh account (${response.status})`)
+
+  const tokens = await response.json() as Record<string, unknown>
+  if (typeof tokens.access_token !== "string") throw new Error("OpenAI returned an invalid access token")
+  const claims = (typeof tokens.id_token === "string" ? jwtClaims(tokens.id_token) : undefined) ?? jwtClaims(tokens.access_token)
+  const nested = claims?.["https://api.openai.com/auth"]
+  const nestedAccountId = nested && typeof nested === "object"
+    ? (nested as Record<string, unknown>).chatgpt_account_id
+    : undefined
+  const accountId = typeof claims?.chatgpt_account_id === "string"
+    ? claims.chatgpt_account_id
+    : typeof nestedAccountId === "string"
+      ? nestedAccountId
+      : openai.accountId
+
+  return {
+    ...openai,
+    access: tokens.access_token,
+    refresh: typeof tokens.refresh_token === "string" ? tokens.refresh_token : openai.refresh,
+    expires: Date.now() + (typeof tokens.expires_in === "number" ? tokens.expires_in : 3600) * 1000,
+    ...(accountId ? { accountId } : {}),
+  }
+}
+
+async function freshAccount(api: TuiPluginApi, name: string) {
+  const openai = await readOpenAIAuth(accountPath(name)).catch(() => undefined)
+  if (!openai) throw new Error(`Saved account "${name}" is invalid`)
+  if (openai.expires > Date.now() + 30_000) return openai
+
+  let pending = accountRefreshes.get(name)
+  if (!pending) {
+    pending = refreshAccount(openai)
+      .then(async (refreshed) => {
+        await writeJson(accountPath(name), { openai: refreshed })
+        usageCache.delete(name)
+        return refreshed
+      })
+      .finally(() => accountRefreshes.delete(name))
+    accountRefreshes.set(name, pending)
+  }
+  const refreshed = await pending
+
+  const active = await readOpenAIAuth(authPath).catch(() => undefined)
+  const wasActive = Boolean(active && (openai.accountId
+    ? active.accountId === openai.accountId
+    : active.access === openai.access))
+  if (wasActive) {
+    await api.client.auth.set({ providerID: "openai", auth: refreshed })
+  }
+  return refreshed
 }
 
 function positiveNumber(value: unknown) {
@@ -94,11 +219,11 @@ function usageWindow(label: string, value: unknown) {
   return `${label}${limit ? ` (${duration(limit)})` : ""}: ${Math.max(0, 100 - Math.min(100, used))}% left, ${reset}`
 }
 
-function usage(name: string) {
-  return new Promise<string>((resolve, reject) => {
+function usage(api: TuiPluginApi, name: string) {
+  return new Promise<UsageSummary>((resolve, reject) => {
     const run = () => {
       activeUsageRequests++
-      void fetchUsage(name).then(resolve, reject).finally(() => {
+      void fetchUsage(api, name).then(resolve, reject).finally(() => {
         activeUsageRequests--
         usageQueue.shift()?.()
       })
@@ -108,24 +233,28 @@ function usage(name: string) {
   })
 }
 
-async function fetchUsage(name: string) {
+async function fetchUsage(api: TuiPluginApi, name: string) {
   const cached = usageCache.get(name)
-  if (cached && cached.expiresAt > Date.now()) return cached.text
+  if (cached && cached.expiresAt > Date.now()) return cached.summary
 
-  const saved = await readJson(accountPath(name))
-  const openai = saved.openai as Record<string, unknown> | undefined
-  if (openai?.type !== "oauth" || typeof openai.access !== "string") return `${name}: unavailable`
+  const openai = await freshAccount(api, name)
+  const fallbackEmail = jwtClaims(openai.access)?.email
 
   const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
     headers: {
       Authorization: `Bearer ${openai.access}`,
       Accept: "application/json",
       "User-Agent": "codex_cli_rs",
-      ...(typeof openai.accountId === "string" ? { "ChatGPT-Account-Id": openai.accountId } : {}),
+      ...(openai.accountId ? { "ChatGPT-Account-Id": openai.accountId } : {}),
     },
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(10_000),
   })
-  if (!response.ok) return `${name}: unavailable (${response.status})`
+  if (!response.ok) {
+    return {
+      identity: typeof fallbackEmail === "string" ? fallbackEmail : "Account info unavailable",
+      details: `Usage unavailable (${response.status})`,
+    }
+  }
 
   const body = await response.json() as Record<string, unknown>
   const rateLimit = body.rate_limit as Record<string, unknown> | undefined
@@ -133,10 +262,14 @@ async function fetchUsage(name: string) {
     usageWindow("Primary", rateLimit?.primary_window),
     usageWindow("Secondary", rateLimit?.secondary_window),
   ].filter((value): value is string => value !== undefined)
-  const plan = typeof body.plan_type === "string" ? ` (${body.plan_type})` : ""
-  const text = windows.length ? `${plan.trim()}: ${windows.join(" | ")}` : `${plan.trim() || "Usage"}: unavailable`
-  usageCache.set(name, { expiresAt: Date.now() + 60_000, text })
-  return text
+  const email = typeof body.email === "string" ? body.email : fallbackEmail
+  const plan = typeof body.plan_type === "string" ? body.plan_type : undefined
+  const summary = {
+    identity: [email, plan].filter((value): value is string => typeof value === "string").join(" | ") || "Account info unavailable",
+    details: windows.length ? windows.join(" | ") : "Usage unavailable",
+  }
+  usageCache.set(name, { expiresAt: Date.now() + 60_000, summary })
+  return summary
 }
 
 type Account = {
@@ -145,19 +278,20 @@ type Account = {
 }
 
 async function accounts(): Promise<Account[]> {
-  let activeAccountId: string | undefined
-  try {
-    const auth = await readJson(authPath)
-    activeAccountId = typeof auth.openai?.accountId === "string" ? auth.openai.accountId : undefined
-  } catch {
-    // The empty list remains usable even before the first OpenAI login.
-  }
+  const active = await readOpenAIAuth(authPath).catch(() => undefined)
 
   return Promise.all((await accountNames()).map(async (name) => {
-    const saved = await readJson(accountPath(name))
+    const saved = await readOpenAIAuth(accountPath(name)).catch(() => undefined)
+    const isActive = Boolean(saved && active && (saved.accountId
+      ? saved.accountId === active.accountId
+      : saved.access === active.access))
+    if (isActive && active && (!saved || active.expires >= saved.expires)) {
+      if (saved?.access !== active.access) usageCache.delete(name)
+      await writeJson(accountPath(name), { openai: active })
+    }
     return {
       name,
-      active: activeAccountId !== undefined && saved.openai?.accountId === activeAccountId,
+      active: isActive,
     }
   }))
 }
@@ -256,11 +390,17 @@ function AccountList(props: { api: TuiPluginApi; open: () => void }) {
 }
 
 function AccountRow(props: { api: TuiPluginApi; account: Account; selected: boolean }) {
-  const [summary] = createResource(() => usage(props.account.name).catch(() => "Usage: unavailable"))
+  const [summary] = createResource(() => usage(props.api, props.account.name).catch((error) => ({
+    identity: error instanceof Error ? error.message : "Account info unavailable",
+    details: "Usage unavailable",
+  })))
   return (
-    <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={props.selected ? "#2d4f7a" : undefined}>
-      <text><b>{props.account.active ? "* " : "  "}{props.account.name}</b></text>
-      <text fg={props.api.theme.current.textMuted}>{summary() ?? "Loading usage..."}</text>
+    <box flexDirection="column" paddingLeft={1} paddingRight={1} backgroundColor={props.selected ? "#2d4f7a" : undefined}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text><b>{props.account.active ? "* " : "  "}{props.account.name}</b></text>
+        <text fg={props.api.theme.current.textMuted}>{summary()?.identity ?? "Loading account..."}</text>
+      </box>
+      <text fg={props.api.theme.current.textMuted} wrapMode="word">{summary()?.details ?? "Loading usage..."}</text>
     </box>
   )
 }

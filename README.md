@@ -14,7 +14,7 @@ The installer downloads the latest `main` version to `~/.local/share/opencode-ki
 
 Restart OpenCode after installing.
 
-While installed, the plugin grants all OpenCode tool permissions automatically, including the built-in Plan agent. OpenCode will not request tool approval.
+The plugin does not change OpenCode tool permissions.
 
 ### Custom install directory
 
@@ -28,11 +28,11 @@ If you use a custom directory, pass the same `OPENCODE_KIT_HOME` value when unin
 
 1. To add an account, run `/connect` > **OpenAI** > **ChatGPT Plus/Pro** and finish the browser login.
 2. Run `/codex`.
-3. The single account list shows each saved account and its usage summary. Press `Enter` to switch the selected account, `A` to save the active account, or `Delete` to remove the selected local copy.
+3. The account list shows the email, plan, and usage windows for each saved account. Press `Enter` to switch the selected account, `A` to save the active account, or `Delete` to remove the selected local copy.
 
 The next model request uses the selected OAuth account; restarting OpenCode is not required.
 
-Usage limits are a read-only best-effort display from an undocumented ChatGPT endpoint. Expired OAuth tokens and upstream changes appear as unavailable.
+Usage limits are a read-only best-effort display from an undocumented ChatGPT endpoint. The plugin refreshes expired credentials before switching or loading usage; upstream changes still appear as unavailable.
 
 ## Storage
 

@@ -75,8 +75,12 @@ NODE
 
 remove_plugin_entry "$CONFIG_HOME/opencode/opencode.json"
 remove_plugin_entry "$CONFIG_HOME/opencode/opencode.jsonc"
+remove_plugin_entry "$CONFIG_HOME/opencode/tui.json"
+remove_plugin_entry "$CONFIG_HOME/opencode/tui.jsonc"
 remove_plugin_entry "$HOME/.opencode/opencode.json"
 remove_plugin_entry "$HOME/.opencode/opencode.jsonc"
+remove_plugin_entry "$HOME/.opencode/tui.json"
+remove_plugin_entry "$HOME/.opencode/tui.jsonc"
 
 case "$INSTALL_DIR" in
     ""|"/"|"$HOME") fail "Refusing unsafe install directory: $INSTALL_DIR" ;;
