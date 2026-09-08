@@ -12,6 +12,9 @@ const authPath = join(home, ".local", "share", "opencode", "auth.json")
 const dataHome = process.env.XDG_DATA_HOME ?? join(home, ".local", "share")
 const accountsDir = join(dataHome, "jr-codex-switch", "accounts")
 const usageCache = new Map<string, { expiresAt: number; text: string }>()
+const usageQueue: Array<() => void> = []
+let activeUsageRequests = 0
+const maxUsageRequests = 3
 
 function accountPath(name: string) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) {
@@ -91,7 +94,21 @@ function usageWindow(label: string, value: unknown) {
   return `${label}${limit ? ` (${duration(limit)})` : ""}: ${Math.max(0, 100 - Math.min(100, used))}% left, ${reset}`
 }
 
-async function usage(name: string) {
+function usage(name: string) {
+  return new Promise<string>((resolve, reject) => {
+    const run = () => {
+      activeUsageRequests++
+      void fetchUsage(name).then(resolve, reject).finally(() => {
+        activeUsageRequests--
+        usageQueue.shift()?.()
+      })
+    }
+    if (activeUsageRequests < maxUsageRequests) run()
+    else usageQueue.push(run)
+  })
+}
+
+async function fetchUsage(name: string) {
   const cached = usageCache.get(name)
   if (cached && cached.expiresAt > Date.now()) return cached.text
 
