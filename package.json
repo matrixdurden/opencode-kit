@@ -1,6 +1,6 @@
 {
   "name": "opencode-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Manual ChatGPT/Codex account management in OpenCode",
   "type": "module",
@@ -8,6 +8,9 @@
   "exports": {
     "./server": "./src/server.js",
     "./tui": "./src/tui.tsx"
+  },
+  "scripts": {
+    "test": "node --test"
   },
   "engines": {
     "opencode": ">=1.18.29 <2"

@@ -14,7 +14,7 @@ The installer downloads the latest `main` version to `~/.local/share/opencode-ki
 
 Restart OpenCode after installing.
 
-The plugin does not change OpenCode tool permissions.
+While installed, the plugin automatically allows all OpenCode tool permissions, including permissions requested by built-in and custom agents. OpenCode will not prompt for tool approval.
 
 ### Custom install directory
 
